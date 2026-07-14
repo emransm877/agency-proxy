@@ -3,12 +3,27 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 
 const app = express();
-app.use(cors());
+// Allow the custom access-password header through CORS preflight.
+app.use(cors({ allowedHeaders: ['Content-Type', 'x-app-password'] }));
 // Raised from the 100kb default so image / PDF / APK uploads go through.
 app.use(express.json({ limit: '25mb' }));
 
+// Access gate. If APP_PASSWORD is set, every /api request must carry a matching
+// `x-app-password` header, or it's rejected with 401 — this is what actually
+// protects the Anthropic credits (a password only in the web page is bypassable).
+// Leave APP_PASSWORD unset and the gate is disabled (open, as before).
+function requirePassword(req, res, next) {
+  const need = process.env.APP_PASSWORD;
+  if (!need) return next();
+  const got = req.get('x-app-password') || '';
+  if (got !== need) {
+    return res.status(401).json({ error: { message: 'Unauthorized: wrong or missing access password.' } });
+  }
+  next();
+}
+
 // Chat — forwards the whole body to Anthropic (so `tools` and `stream` pass through).
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', requirePassword, async (req, res) => {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -29,7 +44,7 @@ app.post('/api/chat', async (req, res) => {
 // Image generation. Prefers Google Gemini (free tier at aistudio.google.com),
 // falls back to OpenAI if only OPENAI_API_KEY is set. Always responds in the
 // shape the app expects: { data: [ { b64_json } ] }.
-app.post('/api/image', async (req, res) => {
+app.post('/api/image', requirePassword, async (req, res) => {
   const prompt = String(req.body.prompt || '').slice(0, 4000);
   if (!prompt) return res.status(400).json({ error: { message: 'Missing prompt' } });
 
